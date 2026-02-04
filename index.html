@@ -3,274 +3,400 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>3D Parcel Master</title>
-    <script async src="https://docs.opencv.org/4.5.4/opencv.js" type="text/javascript"></script>
+    <title>Parcel Master 3D</title>
     <style>
-        body { margin: 0; background: #000; font-family: 'Segoe UI', sans-serif; overflow: hidden; color: white; -webkit-user-select: none; }
+        :root {
+            --primary: #007aff;
+            --success: #28a745;
+            --warning: #ffc107;
+            --danger: #dc3545;
+            --bg: #121212;
+        }
+
+        body {
+            margin: 0; padding: 0;
+            background: var(--bg);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: white;
+            overflow: hidden;
+            -webkit-user-select: none;
+        }
+
+        /* Lade-Bildschirm */
+        #loader {
+            position: fixed; inset: 0;
+            background: var(--bg);
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            z-index: 1000;
+            transition: opacity 0.5s;
+        }
+
+        .spinner {
+            width: 50px; height: 50px;
+            border: 5px solid #333;
+            border-top: 5px solid var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Kamera & Canvas */
         #container { position: relative; width: 100vw; height: 100vh; }
         video { position: absolute; width: 100%; height: 100%; object-fit: cover; }
         canvas { position: absolute; width: 100%; height: 100%; object-fit: cover; z-index: 5; }
-        
-        #ui-top { position: absolute; top: 0; width: 100%; z-index: 10; background: rgba(0,0,0,0.6); padding: 15px 0; text-align: center; border-bottom: 2px solid #007bff; }
-        .status { font-size: 1.1rem; font-weight: bold; letter-spacing: 1px; }
-        .progress-bg { width: 80%; background: #333; height: 8px; margin: 10px auto; border-radius: 4px; overflow: hidden; }
-        #progress-fill { width: 0%; height: 100%; background: #28a745; transition: width 0.2s; }
-        
-        .controls { position: absolute; bottom: 40px; width: 100%; z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 15px; }
-        button { padding: 18px 40px; font-size: 1.2rem; border-radius: 50px; border: none; font-weight: bold; color: white; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        #btn-measure { background: #007bff; width: 70%; }
-        #btn-reset { background: #dc3545; font-size: 0.9rem; padding: 10px 20px; }
-        
-        .overlay-instr { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); border: 2px dashed rgba(255,255,255,0.5); width: 60%; height: 40%; pointer-events: none; display: none; }
-        #loading-screen { position: fixed; inset: 0; background: #111; display: flex; justify-content: center; align-items: center; z-index: 100; flex-direction: column; }
+
+        /* UI-Elemente */
+        .ui-panel {
+            position: absolute;
+            width: 100%;
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        #top-panel {
+            top: 0;
+            background: rgba(0,0,0,0.8);
+            padding: 20px 0;
+            border-bottom: 2px solid var(--primary);
+            text-align: center;
+        }
+
+        .instruction-step {
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }
+
+        .instruction-detail {
+            font-size: 0.9rem;
+            opacity: 0.8;
+        }
+
+        .progress-container {
+            width: 80%; height: 6px;
+            background: #333;
+            margin: 15px auto 0;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        #progress-bar {
+            width: 0%; height: 100%;
+            background: var(--success);
+            transition: width 0.2s;
+        }
+
+        #bottom-panel {
+            bottom: 0;
+            padding: 40px 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            pointer-events: auto;
+        }
+
+        button {
+            pointer-events: auto;
+            border: none;
+            border-radius: 50px;
+            font-weight: bold;
+            color: white;
+            cursor: pointer;
+            transition: transform 0.1s, background 0.3s;
+        }
+
+        button:active { transform: scale(0.95); }
+
+        #btn-main {
+            width: 70%;
+            padding: 20px;
+            font-size: 1.2rem;
+            background: var(--primary);
+            box-shadow: 0 4px 15px rgba(0,122,255,0.4);
+        }
+
+        #btn-reset {
+            margin-top: 20px;
+            padding: 10px 25px;
+            font-size: 0.8rem;
+            background: #333;
+        }
+
+        /* Zielkreuz */
+        #target-frame {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 60%; height: 40%;
+            border: 2px dashed rgba(255,255,255,0.3);
+            border-radius: 10px;
+            display: none;
+        }
     </style>
 </head>
 <body>
 
-<div id="loading-screen">
-    <div style="font-size: 2rem; margin-bottom: 20px;">📦</div>
-    <div>Lade Computer Vision...</div>
+<div id="loader">
+    <div class="spinner"></div>
+    <p id="load-status" style="margin-top: 20px;">Lade System-Komponenten...</p>
 </div>
 
 <div id="container">
     <video id="videoInput" playsinline></video>
     <canvas id="canvasOutput"></canvas>
-    <div id="target-box" class="overlay-instr"></div>
-</div>
+    <div id="target-frame"></div>
 
-<div id="ui-top">
-    <div id="status" class="status">Initialisiere...</div>
-    <div id="p-container" class="progress-bg">
-        <div id="progress-fill"></div>
+    <div id="top-panel" class="ui-panel">
+        <div id="step-title" class="instruction-step">Phase 1: Kalibrierung</div>
+        <div id="step-desc" class="instruction-detail">Blatt flach hinlegen und langsam umkreisen</div>
+        <div id="prog-wrapper" class="progress-container">
+            <div id="progress-bar"></div>
+        </div>
+    </div>
+
+    <div id="bottom-panel" class="ui-panel">
+        <button id="btn-main" onclick="handleMainAction()">Warte auf Kamera...</button>
+        <button id="btn-reset" onclick="resetCalibration()">Kalibrierung löschen</button>
     </div>
 </div>
 
-<div class="controls">
-    <button id="btn-measure" onclick="onMeasure()">FOTO & MESSEN</button>
-    <button id="btn-reset" onclick="resetApp()">NEU KALIBRIEREN</button>
-</div>
+<!-- OpenCV.js laden mit Error Handling -->
+<script>
+    const statusMsg = document.getElementById('load-status');
+    
+    // Fehlerbehandlung falls das Skript nicht lädt
+    const scriptTimeout = setTimeout(() => {
+        statusMsg.innerHTML = "Fehler: Netzwerk zu langsam.<br>Bitte Seite neu laden.";
+        statusMsg.style.color = "#dc3545";
+    }, 15000);
+
+    function onOpenCvReady() {
+        clearTimeout(scriptTimeout);
+        statusMsg.innerText = "System bereit. Starte Kamera...";
+        initApp();
+    }
+</script>
+<script async src="https://docs.opencv.org/4.5.4/opencv.js" onload="onOpenCvReady()"></script>
 
 <script>
-let state = 'SCAN'; // SCAN, READY, RESULT
-let pxPerCm = localStorage.getItem('px_cm') ? parseFloat(localStorage.getItem('px_cm')) : null;
-let calibData = [];
-const SAMPLES_NEEDED = 80;
+    let state = 'INIT'; // INIT, CALIB, READY, RESULT
+    let video = document.getElementById('videoInput');
+    let canvas = document.getElementById('canvasOutput');
+    let ctx = canvas.getContext('2d');
+    let pxPerCm = localStorage.getItem('parcel_px_cm') ? parseFloat(localStorage.getItem('parcel_px_cm')) : null;
+    let samples = [];
+    const REQUIRED_SAMPLES = 60;
+    let resultImageData = null;
 
-let video = document.getElementById('videoInput');
-let canvas = document.getElementById('canvasOutput');
-let ctx = canvas.getContext('2d');
-let stream = null;
-let resultFrame = null;
-
-function onOpenCvReady() {
-    document.getElementById('loading-screen').style.display = 'none';
-    startApp();
-}
-
-async function startApp() {
-    stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } 
-    });
-    video.srcObject = stream;
-    video.play();
-    
-    state = pxPerCm ? 'READY' : 'SCAN';
-    updateUI();
-    requestAnimationFrame(processFrame);
-}
-
-function updateUI() {
-    const s = document.getElementById('status');
-    const p = document.getElementById('p-container');
-    const b = document.getElementById('btn-measure');
-    const t = document.getElementById('target-box');
-
-    if (state === 'SCAN') {
-        s.innerText = "PHASE 1: BLATT ABSCANNEN (Bewegen!)";
-        s.style.color = "#ffc107";
-        p.style.display = "block";
-        b.style.display = "none";
-        t.style.display = "none";
-    } else {
-        s.innerText = state === 'READY' ? "PHASE 2: PAKET MESSBEREIT" : "ERGEBNIS";
-        s.style.color = "#28a745";
-        p.style.display = "none";
-        b.style.display = "block";
-        b.innerText = state === 'READY' ? "PAKET MESSEN" : "NEUE MESSUNG";
-        t.style.display = state === 'READY' ? "block" : "none";
-    }
-}
-
-function resetApp() {
-    localStorage.removeItem('px_cm');
-    pxPerCm = null;
-    calibData = [];
-    state = 'SCAN';
-    resultFrame = null;
-    updateUI();
-}
-
-function onMeasure() {
-    if (state === 'READY') {
-        state = 'RESULT';
-    } else {
-        state = 'READY';
-        resultFrame = null;
-    }
-    updateUI();
-}
-
-function processFrame() {
-    if (state === 'RESULT' && resultFrame) {
-        ctx.putImageData(resultFrame, 0, 0);
-        requestAnimationFrame(processFrame);
-        return;
+    async function initApp() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } 
+            });
+            video.srcObject = stream;
+            await video.play();
+            
+            document.getElementById('loader').style.opacity = '0';
+            setTimeout(() => document.getElementById('loader').style.display = 'none', 500);
+            
+            state = pxPerCm ? 'READY' : 'CALIB';
+            updateUI();
+            requestAnimationFrame(processLoop);
+        } catch (err) {
+            alert("Kamera-Fehler: " + err.message);
+        }
     }
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
+    function updateUI() {
+        const title = document.getElementById('step-title');
+        const desc = document.getElementById('step-desc');
+        const mainBtn = document.getElementById('btn-main');
+        const prog = document.getElementById('prog-wrapper');
+        const target = document.getElementById('target-frame');
 
-    let src = cv.imread(canvas);
-    let gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-    cv.Canny(gray, gray, 50, 150);
-
-    let contours = new cv.MatVector();
-    let hierarchy = new cv.Mat();
-    cv.findContours(gray, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-    if (state === 'SCAN') {
-        handleCalibration(contours, src);
-    } else if (state === 'READY') {
-        // Im Live-Bild nur eine Vorschau zeichnen
-    } else if (state === 'RESULT' && !resultFrame) {
-        runGrabCutAndMeasure(src);
+        if (state === 'CALIB') {
+            title.innerText = "Schritt 1: Blatt Scannen";
+            desc.innerText = "Bewege die Kamera über das DIN A4 Blatt";
+            mainBtn.style.display = "none";
+            prog.style.display = "block";
+            target.style.display = "none";
+        } else if (state === 'READY') {
+            title.innerText = "Schritt 2: Paket Messen";
+            desc.innerText = "Paket mittig einrahmen und Knopf drücken";
+            mainBtn.style.display = "block";
+            mainBtn.innerText = "JETZT VERMESSEN";
+            mainBtn.style.background = "var(--primary)";
+            prog.style.display = "none";
+            target.style.display = "block";
+        } else if (state === 'RESULT') {
+            title.innerText = "Ergebnis";
+            desc.innerText = "Gelb=Höhe | Grün=Länge | Blau=Breite";
+            mainBtn.innerText = "NÄCHSTE MESSUNG";
+            mainBtn.style.background = "var(--success)";
+            target.style.display = "none";
+        }
     }
 
-    src.delete(); gray.delete(); contours.delete(); hierarchy.delete();
-    requestAnimationFrame(processFrame);
-}
+    function handleMainAction() {
+        if (state === 'READY') {
+            state = 'RESULT';
+        } else if (state === 'RESULT') {
+            resultImageData = null;
+            state = 'READY';
+        }
+        updateUI();
+    }
 
-function handleCalibration(contours, src) {
-    for (let i = 0; i < contours.size(); ++i) {
-        let cnt = contours.get(i);
-        if (cv.contourArea(cnt) > 10000) {
-            let approx = new cv.Mat();
-            cv.approxPolyDP(cnt, approx, 0.02 * cv.arcLength(cnt, true), true);
-            if (approx.rows === 4) {
-                drawCvRect(approx, [0, 255, 0, 255]);
-                let d1 = Math.hypot(approx.data32S[0]-approx.data32S[2], approx.data32S[1]-approx.data32S[3]);
-                let d2 = Math.hypot(approx.data32S[2]-approx.data32S[4], approx.data32S[3]-approx.data32S[5]);
-                calibData.push(Math.max(d1, d2) / 29.7);
-                
-                let progress = (calibData.length / SAMPLES_NEEDED) * 100;
-                document.getElementById('progress-fill').style.width = progress + "%";
-                
-                if (calibData.length >= SAMPLES_NEEDED) {
-                    pxPerCm = calibData.sort((a,b) => a-b)[Math.floor(calibData.length/2)];
-                    localStorage.setItem('px_cm', pxPerCm);
-                    state = 'READY';
-                    updateUI();
+    function resetCalibration() {
+        localStorage.removeItem('parcel_px_cm');
+        pxPerCm = null;
+        samples = [];
+        state = 'CALIB';
+        updateUI();
+    }
+
+    function processLoop() {
+        if (state === 'RESULT' && resultImageData) {
+            ctx.putImageData(resultImageData, 0, 0);
+            requestAnimationFrame(processLoop);
+            return;
+        }
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+
+        if (typeof cv === 'undefined' || !cv.Mat) {
+            requestAnimationFrame(processLoop);
+            return;
+        }
+
+        let src = cv.imread(canvas);
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+        cv.Canny(gray, gray, 50, 150);
+
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+        cv.findContours(gray, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+        if (state === 'CALIB') {
+            for (let i = 0; i < contours.size(); ++i) {
+                let cnt = contours.get(i);
+                if (cv.contourArea(cnt) > 8000) {
+                    let approx = new cv.Mat();
+                    cv.approxPolyDP(cnt, approx, 0.02 * cv.arcLength(cnt, true), true);
+                    if (approx.rows === 4) {
+                        drawPolygon(approx, "lime", 4);
+                        
+                        // Maßstab berechnen
+                        let p1 = {x: approx.data32S[0], y: approx.data32S[1]};
+                        let p2 = {x: approx.data32S[2], y: approx.data32S[3]};
+                        let p3 = {x: approx.data32S[4], y: approx.data32S[5]};
+                        let d1 = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+                        let d2 = Math.hypot(p2.x - p3.x, p2.y - p3.y);
+                        
+                        samples.push(Math.max(d1, d2) / 29.7);
+                        document.getElementById('progress-bar').style.width = (samples.length / REQUIRED_SAMPLES * 100) + "%";
+
+                        if (samples.length >= REQUIRED_SAMPLES) {
+                            pxPerCm = samples.sort((a,b) => a-b)[Math.floor(samples.length/2)];
+                            localStorage.setItem('parcel_px_cm', pxPerCm);
+                            state = 'READY';
+                            updateUI();
+                        }
+                    }
+                    approx.delete();
                 }
             }
-            approx.delete();
-        }
-    }
-}
+        } 
+        else if (state === 'RESULT' && !resultImageData) {
+            // Paket-Erkennung im Standbild
+            let biggest = null;
+            let maxArea = 0;
+            for (let i = 0; i < contours.size(); ++i) {
+                let area = cv.contourArea(contours.get(i));
+                if (area > maxArea && area < (src.rows * src.cols * 0.9)) {
+                    maxArea = area;
+                    biggest = contours.get(i);
+                }
+            }
 
-function runGrabCutAndMeasure(src) {
-    // Einfache Segmentierung für den Browser-Prototyp
-    // Wir extrahieren Konturen im Fokusbereich
-    let gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    cv.Canny(gray, gray, 50, 150);
-    let contours = new cv.MatVector();
-    let hierarchy = new cv.Mat();
-    cv.findContours(gray, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-    let biggest = null;
-    let maxArea = 0;
-    for (let i = 0; i < contours.size(); ++i) {
-        let area = cv.contourArea(contours.get(i));
-        if (area > maxArea && area < (src.rows * src.cols * 0.8)) {
-            maxArea = area;
-            biggest = contours.get(i);
-        }
-    }
-
-    if (biggest) {
-        let hull = new cv.Mat();
-        cv.convexHull(biggest, hull);
-        let approx = new cv.Mat();
-        cv.approxPolyDP(hull, approx, 0.02 * cv.arcLength(hull, true), true);
-        
-        drawResultGraphics(approx);
-        
-        hull.delete(); approx.delete();
-    }
-    
-    resultFrame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    gray.delete(); contours.delete(); hierarchy.delete();
-}
-
-function drawResultGraphics(approx) {
-    let pts = [];
-    for (let i = 0; i < approx.rows; i++) {
-        pts.push({ x: approx.data32S[i*2], y: approx.data32S[i*2+1] });
-    }
-
-    // 3D Logik: Wir suchen vertikale (Höhe) und horizontale (Boden) Kanten
-    pts.forEach((p1, i) => {
-        let p2 = pts[(i + 1) % pts.length];
-        let dx = p2.x - p1.x;
-        let dy = p2.y - p1.y;
-        let angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
-        let dist = Math.hypot(dx, dy) / pxPerCm;
-
-        let color = "#0f0"; // Länge Standard
-        let label = "L";
-
-        if (angle > 70 && angle < 110) {
-            color = "#ff0"; // Höhe
-            label = "H";
-        } else if (dist < 15) { // Kleinerer Wert meist Breite
-            color = "#00f";
-            label = "B";
+            if (biggest) {
+                let hull = new cv.Mat();
+                cv.convexHull(biggest, hull);
+                let approx = new cv.Mat();
+                cv.approxPolyDP(hull, approx, 0.02 * cv.arcLength(hull, true), true);
+                
+                render3DMeasurements(approx);
+                
+                hull.delete(); approx.delete();
+            }
+            resultImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         }
 
-        // Zeichnen
+        src.delete(); gray.delete(); contours.delete(); hierarchy.delete();
+        requestAnimationFrame(processLoop);
+    }
+
+    function render3DMeasurements(approx) {
+        let pts = [];
+        for (let i = 0; i < approx.rows; i++) {
+            pts.push({ x: approx.data32S[i*2], y: approx.data32S[i*2+1] });
+        }
+
+        pts.forEach((p1, i) => {
+            let p2 = pts[(i + 1) % pts.length];
+            let dx = p2.x - p1.x;
+            let dy = p2.y - p1.y;
+            let angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+            let dist = Math.hypot(dx, dy) / pxPerCm;
+
+            let color = "#00ff00"; // Länge (Grün)
+            let type = "L";
+
+            if (angle > 70 && angle < 110) {
+                color = "#ffff00"; // Höhe (Gelb)
+                type = "H";
+            } else if (dist < 15) { // Empirischer Wert für Breite vs Länge
+                color = "#00bbff"; // Breite (Blau)
+                type = "B";
+            }
+
+            // Zeichnen
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 10;
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+
+            // Label
+            ctx.fillStyle = "rgba(0,0,0,0.7)";
+            ctx.fillRect((p1.x+p2.x)/2 - 35, (p1.y+p2.y)/2 - 25, 70, 35);
+            ctx.fillStyle = "white";
+            ctx.font = "bold 22px Arial";
+            ctx.fillText(`${type}:${dist.toFixed(1)}`, (p1.x+p2.x)/2 - 30, (p1.y+p2.y)/2);
+        });
+    }
+
+    function drawPolygon(approx, color, width) {
         ctx.strokeStyle = color;
-        ctx.lineWidth = 8;
+        ctx.lineWidth = width;
         ctx.beginPath();
-        ctx.moveTo(p1.x, p1.y);
-        ctx.lineTo(p2.x, p2.y);
+        ctx.moveTo(approx.data32S[0], approx.data32S[1]);
+        for (let i = 1; i < approx.rows; i++) {
+            ctx.lineTo(approx.data32S[i*2], approx.data32S[i*2+1]);
+        }
+        ctx.closePath();
         ctx.stroke();
-
-        // Label mit Hintergrund
-        ctx.fillStyle = "black";
-        ctx.fillRect((p1.x+p2.x)/2 - 30, (p1.y+p2.y)/2 - 20, 80, 30);
-        ctx.fillStyle = color;
-        ctx.font = "bold 20px Arial";
-        ctx.fillText(`${label}: ${dist.toFixed(1)}cm`, (p1.x+p2.x)/2 - 25, (p1.y+p2.y)/2);
-    });
-}
-
-function drawCvRect(approx, color) {
-    ctx.strokeStyle = `rgba(${color[0]},${color[1]},${color[2]},1)`;
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.moveTo(approx.data32S[0], approx.data32S[1]);
-    for (let i = 1; i < 4; i++) ctx.lineTo(approx.data32S[i*2], approx.data32S[i*2+1]);
-    ctx.closePath();
-    ctx.stroke();
-}
-
-window.onload = () => {
-    if (typeof cv !== 'undefined' && cv.Mat) onOpenCvReady();
-    else window.cv = { onRuntimeInitialized: onOpenCvReady };
-};
+    }
 </script>
+
 </body>
 </html>
