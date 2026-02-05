@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Manual 3D Parcel Master</title>
+    <script async src="https://docs.opencv.org/4.5.4/opencv.js" type="text/javascript"></script>
+    <style>
+        body { margin: 0; background: #000; font-family: sans-serif; overflow: hidden; color: white; touch-action: none; }
+        #container { position: relative; width: 100vw; height: 100vh; }
+        video { position: absolute; width: 100%; height: 100%; object-fit: cover; opacity: 0.8; }
+        canvas { position: absolute; width: 100%; height: 100%; object-fit: cover; z-index: 10; }
+        #ui-top { position: absolute; top: 0; width: 100%; z-index: 20; background: rgba(0,0,0,0.8); padding: 15px 0; text-align: center; border-bottom: 2px solid #007bff; }
+        .status { font-size: 1.1rem; font-weight: bold; padding: 0 10px; }
+        .controls { position: absolute; bottom: 30px; width: 100%; z-index: 20; display: flex; justify-content: center; gap: 10px; }
+        button { padding: 15px 25px; font-size: 1rem; border-radius: 10px; border: none; font-weight: bold; color: white; cursor: pointer; background: #444; }
+        #btn-reset { background: #dc3545; }
+        .dot-label { position: absolute; background: white; color: black; border-radius: 50%; width: 25px; height: 25px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 12px; z-index: 15; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <video id="videoInput" playsinline muted></video>
+    <canvas id="canvasOutput" onclick="handleTap(event)"></canvas>
+</div>
+
+<div id="ui-top">
+    <div id="status" class="status">Lade System...</div>
+</div>
+
+<div class="controls">
+    <button onclick="undoStep()">RÜCKGÄNGIG</button>
+    <button id="btn-reset" onclick="resetApp()">NEU KALIBRIEREN</button>
+</div>
+
+<script>
+let state = 'SCAN'; // SCAN, POINT1, POINT2, POINT3, POINT4, RESULT
+let pxPerCm = localStorage.getItem('px_cm_v4') ? parseFloat(localStorage.getItem('px_cm_v4')) : null;
+let points = [];
+let calibSamples = [];
+const video = document.getElementById('videoInput');
+const canvas = document.getElementById('canvasOutput');
+const ctx = canvas.getContext('2d');
+const statusText = document.getElementById('status');
+
+function onOpenCvReady() { initCamera(); }
+
+async function initCamera() {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: 1280, height: 720 } });
+    video.srcObject = stream;
+    video.play();
+    state = pxPerCm ? 'POINT1' : 'SCAN';
+    updateUI();
+    processFrame();
+}
+
+function updateUI() {
+    const steps = {
+        'SCAN': 'PHASE 1: Blatt scannen (bis Balken voll)',
+        'POINT1': 'Schritt 1: Tippe vordere UNTERE Ecke an',
+        'POINT2': 'Schritt 2: Tippe Ecke direkt darüber an (HÖHE)',
+        'POINT3': 'Schritt 3: Tippe untere Ecke LINKS an (BREITE)',
+        'POINT4': 'Schritt 4: Tippe untere Ecke RECHTS an (LÄNGE)',
+        'RESULT': 'ERGEBNIS (Tippen zum Neustart)'
+    };
+    statusText.innerText = steps[state];
+    statusText.style.color = (state === 'SCAN') ? "#ffc107" : "#00ff00";
+}
+
+function handleTap(event) {
+    if (state === 'SCAN' || state === 'RESULT') {
+        if (state === 'RESULT') { points = []; state = 'POINT1'; updateUI(); }
+        return;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const x = (event.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (event.clientY - rect.top) * (canvas.height / rect.height);
+    points.push({x, y});
+
+    if (state === 'POINT1') state = 'POINT2';
+    else if (state === 'POINT2') state = 'POINT3';
+    else if (state === 'POINT3') state = 'POINT4';
+    else if (state === 'POINT4') state = 'RESULT';
+    
+    updateUI();
+}
+
+function undoStep() {
+    if (points.length > 0) {
+        points.pop();
+        const states = ['POINT1', 'POINT2', 'POINT3', 'POINT4', 'RESULT'];
+        state = states[points.length];
+        updateUI();
+    }
+}
+
+function resetApp() {
+    localStorage.removeItem('px_cm_v4');
+    pxPerCm = null; calibSamples = []; points = []; state = 'SCAN';
+    updateUI();
+}
+
+function processFrame() {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+
+    if (state === 'SCAN') {
+        runCalibration();
+    }
+
+    drawOverlay();
+    requestAnimationFrame(processFrame);
+}
+
+function runCalibration() {
+    try {
+        let src = cv.imread(canvas);
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        cv.Canny(gray, gray, 50, 150);
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+        cv.findContours(gray, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+        for (let i = 0; i < contours.size(); ++i) {
+            let cnt = contours.get(i);
+            if (cv.contourArea(cnt) > 10000) {
+                let approx = new cv.Mat();
+                cv.approxPolyDP(cnt, approx, 0.02 * cv.arcLength(cnt, true), true);
+                if (approx.rows === 4) {
+                    let d1 = Math.hypot(approx.data32S[0]-approx.data32S[2], approx.data32S[1]-approx.data32S[3]);
+                    calibSamples.push(d1 / 29.7);
+                    if (calibSamples.length >= 40) {
+                        pxPerCm = calibSamples.sort((a,b)=>a-b)[20];
+                        localStorage.setItem('px_cm_v4', pxPerCm);
+                        state = 'POINT1'; updateUI();
+                    }
+                }
+                approx.delete();
+            }
+        }
+        src.delete(); gray.delete(); contours.delete(); hierarchy.delete();
+    } catch(e) {}
+}
+
+function drawOverlay() {
+    // Punkte zeichnen
+    points.forEach((p, i) => {
+        ctx.fillStyle = "white";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 8, 0, Math.PI*2);
+        ctx.fill();
+        ctx.strokeStyle = "black";
+        ctx.stroke();
+    });
+
+    if (points.length >= 2) { // HÖHE (Gelb)
+        drawLine(points[0], points[1], "#ffff00", "H");
+    }
+    if (points.length >= 3) { // BREITE (Blau)
+        drawLine(points[0], points[2], "#007bff", "B");
+    }
+    if (points.length >= 4) { // LÄNGE (Grün)
+        drawLine(points[0], points[3], "#00ff00", "L");
+        
+        // Quader vervollständigen (Parallele Linien)
+        const p1=points[0], p2=points[1], p3=points[2], p4=points[3];
+        const h = {x: p2.x-p1.x, y: p2.y-p1.y};
+        const b = {x: p3.x-p1.x, y: p3.y-p1.y};
+        const l = {x: p4.x-p1.x, y: p4.y-p1.y};
+
+        // Obere Flächen
+        ctx.lineWidth = 4;
+        ctx.setLineDash([10, 5]);
+        drawSimpleLine(p2, {x: p2.x+b.x, y: p2.y+b.y}, "#007bff"); // Obere Breite
+        drawSimpleLine(p2, {x: p2.x+l.x, y: p2.y+l.y}, "#00ff00"); // Obere Länge
+        drawSimpleLine(p3, {x: p3.x+h.x, y: p3.y+h.y}, "#ffff00"); // Linke Höhe
+        drawSimpleLine(p4, {x: p4.x+h.x, y: p4.y+h.y}, "#ffff00"); // Rechte Höhe
+    }
+}
+
+function drawLine(p1, p2, col, label) {
+    const dist = Math.hypot(p1.x-p2.x, p1.y-p2.y) / pxPerCm;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 10;
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+
+    const mx = (p1.x+p2.x)/2, my = (p1.y+p2.y)/2;
+    ctx.fillStyle = "rgba(0,0,0,0.8)";
+    ctx.fillRect(mx-40, my-25, 100, 40);
+    ctx.fillStyle = col;
+    ctx.font = "bold 24px Arial";
+    ctx.fillText(`${label}: ${dist.toFixed(1)}cm`, mx-35, my+5);
+}
+
+function drawSimpleLine(p1, p2, col) {
+    ctx.strokeStyle = col;
+    ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+}
+
+window.onload = () => { if (cv.Mat) onOpenCvReady(); else cv['onRuntimeInitialized'] = onOpenCvReady; };
+</script>
+</body>
+</html>
