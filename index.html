@@ -8,19 +8,14 @@
     <style>
         body { margin: 0; background: #000; font-family: sans-serif; overflow: hidden; color: white; }
         #container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
-        video { position: absolute; width: 100%; height: 100%; object-fit: cover; }
+        video { position: absolute; width: 100%; height: 100%; object-fit: cover; opacity: 0; } /* Video unsichtbar, wir nutzen Canvas */
         canvas { position: absolute; width: 100%; height: 100%; object-fit: cover; z-index: 5; }
         
-        /* Die Ziel-Box zum Positionieren */
         #target-box { 
-            position: absolute; 
-            width: 60%; 
-            height: 40%; 
+            position: absolute; width: 60%; height: 40%; 
             border: 4px dashed rgba(255, 255, 255, 0.8); 
-            z-index: 10; 
-            pointer-events: none; 
-            display: none; /* Wird per JS aktiviert */
-            box-shadow: 0 0 0 1000px rgba(0,0,0,0.3); /* Dunkelt den Rest ab */
+            z-index: 10; pointer-events: none; display: none;
+            box-shadow: 0 0 0 1000px rgba(0,0,0,0.4);
         }
 
         #ui-top { position: absolute; top: 0; width: 100%; z-index: 20; background: rgba(0,0,0,0.8); padding: 20px 0; text-align: center; }
@@ -44,13 +39,13 @@
 </div>
 
 <div id="container">
-    <video id="videoInput" playsinline></video>
+    <video id="videoInput" playsinline muted></video>
     <canvas id="canvasOutput"></canvas>
     <div id="target-box"></div>
 </div>
 
 <div id="ui-top">
-    <div id="status">Blatt wird gesucht...</div>
+    <div id="status">Warte auf Kamera...</div>
     <div class="progress-bg" id="p-bar-container">
         <div id="progress-fill"></div>
     </div>
@@ -62,10 +57,10 @@
 </div>
 
 <script>
-let state = 'SCAN'; // SCAN, READY, RESULT
+let state = 'SCAN';
 let pxPerCm = localStorage.getItem('px_cm') ? parseFloat(localStorage.getItem('px_cm')) : null;
 let calibSamples = [];
-const REQUIRED_SAMPLES = 60;
+const REQUIRED_SAMPLES = 50;
 
 const video = document.getElementById('videoInput');
 const canvas = document.getElementById('canvasOutput');
@@ -75,6 +70,8 @@ const statusText = document.getElementById('status');
 const btnMeasure = document.getElementById('btn-measure');
 const progressFill = document.getElementById('progress-fill');
 
+let isStreaming = false;
+
 function onOpenCvReady() {
     document.getElementById('loading').style.display = 'none';
     initCamera();
@@ -83,13 +80,19 @@ function onOpenCvReady() {
 async function initCamera() {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: "environment", width: 1280, height: 720 } 
+            video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } 
         });
         video.srcObject = stream;
         video.play();
-        state = pxPerCm ? 'READY' : 'SCAN';
-        updateUI();
-        processFrame();
+        
+        video.oncanplay = () => {
+            if (!isStreaming) {
+                isStreaming = true;
+                state = pxPerCm ? 'READY' : 'SCAN';
+                updateUI();
+                processFrame();
+            }
+        };
     } catch (e) {
         alert("Kamerafehler: " + e.message);
     }
@@ -126,6 +129,7 @@ function resetCalibration() {
 
 function onMeasureClick() {
     if (state === 'READY') {
+        performMeasurement();
         state = 'RESULT';
     } else {
         state = 'READY';
@@ -134,31 +138,32 @@ function onMeasureClick() {
 }
 
 function processFrame() {
-    if (state === 'RESULT') {
-        // Im Result-Modus halten wir das Bild an
+    // WICHTIG: Prüfen ob das Video wirklich Pixel liefert
+    if (!isStreaming || video.videoWidth === 0 || state === 'RESULT') {
         requestAnimationFrame(processFrame);
         return;
     }
 
-    if (video.paused || video.ended) return;
-
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    let src = cv.imread(canvas);
-    let gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+    try {
+        let src = cv.imread(canvas);
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
 
-    if (state === 'SCAN') {
-        detectCalibrationSheet(gray, src);
-    } else if (state === 'READY') {
-        // Optional: Live-Vorschau der Kanten im Zielbereich
+        if (state === 'SCAN') {
+            detectCalibrationSheet(gray, src);
+        }
+
+        cv.imshow('canvasOutput', src);
+        src.delete(); gray.delete();
+    } catch (err) {
+        console.log("Warte auf Bilddaten...");
     }
 
-    cv.imshow('canvasOutput', src);
-    src.delete(); gray.delete();
     requestAnimationFrame(processFrame);
 }
 
@@ -171,25 +176,22 @@ function detectCalibrationSheet(gray, src) {
 
     for (let i = 0; i < contours.size(); ++i) {
         let cnt = contours.get(i);
-        let area = cv.contourArea(cnt);
-        if (area > 10000) {
+        if (cv.contourArea(cnt) > 8000) {
             let approx = new cv.Mat();
             cv.approxPolyDP(cnt, approx, 0.02 * cv.arcLength(cnt, true), true);
             if (approx.rows === 4) {
-                // Grüner Rahmen für das Blatt
                 let pts = [];
                 for(let j=0; j<4; j++) pts.push({x: approx.data32S[j*2], y: approx.data32S[j*2+1]});
                 
-                // Zeichnen auf Canvas
+                // Zeichnen des Referenz-Rahmens
                 ctx.strokeStyle = "#00ff00";
-                ctx.lineWidth = 5;
+                ctx.lineWidth = 6;
                 ctx.beginPath();
                 ctx.moveTo(pts[0].x, pts[0].y);
                 for(let p of pts) ctx.lineTo(p.x, p.y);
                 ctx.closePath();
                 ctx.stroke();
 
-                // Maßstab berechnen
                 let d1 = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
                 let d2 = Math.hypot(pts[1].x - pts[2].x, pts[1].y - pts[2].y);
                 calibSamples.push(Math.max(d1, d2) / 29.7);
@@ -210,7 +212,6 @@ function detectCalibrationSheet(gray, src) {
     edged.delete(); contours.delete(); hierarchy.delete();
 }
 
-// Wenn "PAKET MESSEN" gedrückt wird, führen wir die eigentliche 3D-Analyse aus
 function performMeasurement() {
     let src = cv.imread(canvas);
     let gray = new cv.Mat();
@@ -227,7 +228,6 @@ function performMeasurement() {
     for (let i = 0; i < contours.size(); ++i) {
         let cnt = contours.get(i);
         let area = cv.contourArea(cnt);
-        // Wir suchen das größte Objekt, das nicht das ganze Bild ist
         if (area > maxArea && area < (src.rows * src.cols * 0.7)) {
             maxArea = area;
             bestCnt = cnt;
@@ -260,14 +260,14 @@ function draw3DResults(approx) {
         let dist = Math.hypot(dx, dy) / pxPerCm;
         let angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
 
-        let color = "#00ff00"; // Länge (Grün)
+        let color = "#00ff00"; // L
         let label = "L";
 
         if (angle > 70 && angle < 110) {
-            color = "#ffff00"; // Höhe (Gelb)
+            color = "#ffff00"; // H
             label = "H";
-        } else if (dist < 18) {
-            color = "#007bff"; // Breite (Blau)
+        } else if (dist < 20) {
+            color = "#007bff"; // B
             label = "B";
         }
 
@@ -278,31 +278,17 @@ function draw3DResults(approx) {
         ctx.lineTo(p2.x, p2.y);
         ctx.stroke();
 
-        // Label Hintergrund
-        ctx.fillStyle = "rgba(0,0,0,0.7)";
-        ctx.fillRect((p1.x+p2.x)/2 - 40, (p1.y+p2.y)/2 - 30, 90, 40);
+        ctx.fillStyle = "rgba(0,0,0,0.8)";
+        ctx.fillRect((p1.x+p2.x)/2 - 45, (p1.y+p2.y)/2 - 35, 100, 45);
         ctx.fillStyle = color;
-        ctx.font = "bold 24px Arial";
-        ctx.fillText(`${label}: ${dist.toFixed(1)}cm`, (p1.x+p2.x)/2 - 35, (p1.y+p2.y)/2);
+        ctx.font = "bold 26px Arial";
+        ctx.fillText(`${label}: ${dist.toFixed(1)}cm`, (p1.x+p2.x)/2 - 40, (p1.y+p2.y)/2);
     });
 }
 
-// Initialisierung
 window.onload = () => {
-    if (cv.Mat) onOpenCvReady();
+    if (typeof cv !== 'undefined' && cv.Mat) onOpenCvReady();
     else cv['onRuntimeInitialized'] = onOpenCvReady;
-};
-
-// Listener für State-Wechsel zu Result
-const originalOnMeasure = onMeasureClick;
-onMeasureClick = () => {
-    if (state === 'READY') {
-        performMeasurement(); 
-        state = 'RESULT';
-        updateUI();
-    } else {
-        originalOnMeasure();
-    }
 };
 </script>
 </body>
